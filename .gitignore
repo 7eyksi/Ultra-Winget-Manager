@@ -1,0 +1,157 @@
+# =============================================================================
+# THE SOVEREIGN OMNI-SHIELD — THE ULTIMATE UNIVERSAL AGNOSTIC EXCLUSION MATRIX
+# Level-5 Threat-Hunting Workspace Protection Matrix (Zero-Leak Enterprise Tier)
+# Forged to immunize and sanitize public repositories across 40+ engineering paradigms.
+# Compatible with AI, C/C++, .NET, Python, Web Engines, Mobile Ecosystems, & Cloud Matrices.
+# =============================================================================
+
+# --- 1. CORE PIPELINE ARTIFACTS & MATRIX EMISSIONS (DESTROY PUBLIC INGESTION) ---
+build/
+dist/
+_work/
+_spec/
+bin/
+obj/
+out/
+target/
+debug/
+release/
+installer_output/
+compressed_assets/
+*.zpx
+*.iss
+*.spec
+*.manifest
+*.log
+*.tmp
+*.bak
+*.backup
+*~
+~$*
+
+# --- 2. UNIVERSAL PYTHON RUNTIME TELEMETRY CACHES ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.tox/
+htmlcov/
+.coverage
+.cache/
+pip-log.txt
+PyInstaller/
+
+# --- 3. ADVANCED AI, MACHINE LEARNING & DEEP DATA CORES (ANTI-BLOB GUARD) ---
+# Blocks heavy AI dataset weights, deep model networks, and local runtime checkpoints
+.ipynb_checkpoints/
+.hf_cache/
+.wandb/
+models/
+weights/
+datasets/
+*.pt
+*.pth
+*.pkl
+*.pickle
+*.h5
+*.onnx
+*.pb
+*.tflite
+*.ckpt
+*.tensor
+*.safetensors
+*.tensorboard
+
+# --- 4. ENTERPRISE .NET / C# ASSEMBLY RESIDUES ---
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.vs/
+App.config.local
+App.config.dev
+
+# --- 5. NODE.JS / WEB ENGINE PACKAGING NOISE ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+.svelte-kit/
+.next/
+.nuxt/
+.vuepress/.temp/
+.turbo/
+.cache/
+
+# --- 6. NATIVE COMPILATION BLOCKS (C/C++/GO/RUST/FLUTTER) ---
+*.exe
+*.dll
+*.so
+*.dylib
+*.bin
+*.out
+*.o
+*.obj
+*.a
+*.lib
+*.pdb
+Cargo.lock
+.cargo/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# --- 7. HARDENED SECRET SANITIZATION & EXCLUSION GATE (ZERO-LEAK CORES) ---
+# Anti-taint safety matrix targeting keys, API tokens, cloud credential registries, and passwords
+.env
+.env.*
+!.env.example
+*.pem
+*.pfx
+*.pkcs12
+*.key
+*.secret
+*credentials*
+*token*
+*.crt
+*.cer
+.audit_state_registry.json
+audit_state_registry.json
+_FORENSIC_NEON_RECON_MATRIX.md
+audit_compliance_report.md
+project_map.md
+ai_context_master.md
+license.txt
+
+# --- 8. LOCAL OS ENVIRONMENT GHOSTS & GRAPHICAL TRASH ---
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+Desktop.ini
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+
+# --- 9. DOCKER, VIRTUALIZATION & CLOUD GHOSTS ---
+.docker/
+.vagrant/
+.terraform/
+*.tfstate
+*.tfstate.backup
+
+# --- 10. IDE LOCAL VIEWPORTS & CONFIG MATRIX ---
+.vscode/
+.idea/
+*.sln
+*.suo
+*.workspace
+.project
+.classpath
+.factorypath
