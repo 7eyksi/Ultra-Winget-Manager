@@ -7246,26 +7246,166 @@ function Test-UWMExcludedPath {
     if ($Path -match '(?i)\\downloads(?:\\|$)|\\تنزيلات(?:\\|$)') { return $true }
     return $false
 }
+function Get-UWMOsRuntimeShimPattern {
+    # ---- NARROW, ANCHORED OS-RUNTIME SHIM MATRIX ----
+    # Only true operating-system runtime/redistributable shims are matched here.
+    # Deliberately EXCLUDED from this matrix (requirement: never blanket-block consumer apps):
+    #   "Runtime", "Framework", "Tools", "SDK", "Store", "Extension", "Codec", "VMware",
+    #   VirtualBox, Docker, Hyper-V, Visual Studio, Office, JetBrains, and every other
+    #   standalone desktop product. Those now surface normally in the Upper Table.
+    $parts = @(
+        '^microsoft\s+visual\s+c\+\+.*(redistributable|redist)',
+        '\bvcredist[_\-]',
+        '\bvc[_\-]?redist\b',
+        '^microsoft\s+windows\s+(desktop|universal)\s+runtime',
+        '^microsoft\s*\.net',
+        '^\.net\s+(desktop\s+)?runtime',
+        '\bdotnet[\s_\-]+(runtime|sdk|host|windowsdesktop|aspnet|desktop)',
+        '\bnet\s?core\s+runtime\b',
+        '\buniversal\s+c\s+runtime\b',
+        '\buniversal\s+crt\b',
+        '\bucrt(base)?\b',
+        '^microsoft\s+windows\s+app\s+sdk',
+        '^microsoft\s+windows\s+software\s+development\s+kit',
+        '^microsoft\s+windows\s+sdk',
+        '^directx\s+(end\s+)?runtime',
+        '^directx\w*',
+        '\bdirectx\w*.*\bredist',
+        '^microsoft\s+directx',
+        '^microsoft\s+vclibs',
+        '^microsoft\s+(universal\s+c\s+runtime|xaml)',
+        '\bredistributable\b',
+        '^microsoft\s+(silverlight|asp\.net|sql\s+server.*(localdb|express))',
+        '^(apple|google)\s+(quicktime|itunes|application\s+support|chrome\s+update)',
+        '^microsoft\s+(edge\s+webview|edgeupdate|edgewebview)'
+    )
+    return '(?i)(' + ($parts -join '|') + ')'
+}
+function Test-UWMOsShieldPath {
+    # ---- STRICT NATIVE OS SHIELD (path-anchored, keyword-independent) ----
+    # This is the authoritative Windows component boundary. Never relaxed by heuristics.
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $p = $Path -replace '/', '\'
+    return ($p -match '(?i)^\\?C:\\Windows(\\|$)') -or
+           ($p -match '(?i)\\(System32|SysWOW64|Sysnative|WinSxS|servicing|Tasks)(\\|$)') -or
+           ($p -match '(?i)\\WindowsApps(\\|$)') -or
+           ($p -match '(?i)\\Boot(\\|$)') -or
+           ($p -match '(?i)\\System Volume Information(\\|$)') -or
+           ($p -match '(?i)\\DriverStore\\FileRepository(\\|$)')
+}
+function Test-UWMInboxOsComponent {
+    # ---- INBOX WINDOWS COMPONENT TIER ----
+    # Applied ONLY to the new filesystem discovery pass so it can never surface an operating
+    # system shell/component directory as removable consumer software. The pre-existing
+    # registry listing path is deliberately left untouched to avoid unrequested behaviour change.
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $leaf = [System.IO.Path]::GetFileName($Path.TrimEnd('\'))
+    $norm = ($leaf -replace '[^a-zA-Z0-9]', '').ToLowerInvariant()
+    $inbox = @(
+        'windowsdefender','windowsmail','windowsmediaplayer','windowsphotoviewer',
+        'windowsmediafoundation','windowsportabledevices','windowssecurity','windowsfirewall',
+        'windowspublisher','windowsmobileroot','windows Sidebyside','windowssidebyside',
+        'windowsessentials','windowswebexperience','windowsmixedreality','windowsgaming',
+        'windowsportablegaming','windowsstore','windowsphone','windowsphoneLink',
+        'windowssync','windowsupdate','windowsassist','windowscontextawareness',
+        'windowscameracapture','windowssoundrecorder','windowsvoicerecorder',
+        'windowsmaps','windowspeople','windowswallet','windowsfeedbackhub',
+        'windowsquickassist','windowscloudstore','windowsmultimedia','windowsthreemodelviewer',
+        'windowscopilot','windowsdefenderapplicationcontrol','windowsdefenderantivirus',
+        'windowsdefenderantispware','windowsdefenderfirewall','windowsdefenderapplicationcontrol',
+        'internetexplorer','iexplore','iis','windowssdk','windowskits','windowsapps',
+        'windowscore','windowsembedded','windowsnt','windowsntaccessories'
+    )
+    foreach ($i in $inbox) { if ($norm -eq ($i -replace '[^a-zA-Z0-9]', '')) { return $true } }
+    if ($norm -match '^(windowsdefender|windowsmail|windowsmedias|windowsphoto|windowspublish|windowssync|windowssound|windowsvoice|windowsquickassist|windowswebexperience|windowsupdate)') { return $true }
+    return $false
+}
+function Get-UWMLaunchExeName {
+    # ---- LAUNCHABLE EXECUTABLE PROBE ----
+    # Returns the best top-level launcher filename for a directory, or $null when the
+    # directory holds no genuine consumer-facing entry point (helper/updater payloads only).
+    # -MinConfidence 'Strong' demands a name-keyed or canonical-launcher match and refuses the
+    # largest-file fallback. Vendor-nested candidates use 'Strong' so hardware payloads and
+    # helper sub-folders can never be promoted into the Upper Table on a size guess alone.
+    param([string]$Dir, [string]$MinConfidence = 'Any')
+    if ([string]::IsNullOrWhiteSpace($Dir)) { return $null }
+    $exes = $null
+    try { $exes = @(Get-ChildItem -LiteralPath $Dir -Filter '*.exe' -File -ErrorAction SilentlyContinue) } catch { return $null }
+    if ($exes.Count -eq 0) { return $null }
+    $helperPattern  = '(?i)^(unins|uninstall|uninst|setup|install|update|updater|patch|crash|crashpad|repair|modify|remove|delete|helper|service|daemon|agent|tray|elevator|bootstrapper|downloader|installer)'
+    $helperAnywhere = '(?i)(unins|uninstall|updat(er|e)|crashpad|crashreport|repair|releaser|downloader|bootstrapper|elevat)'
+    $helperExact   = @('ucrtbase.exe','vcruntime140.exe','msvcp140.exe','dxwebview.exe','wpvmlauncher.exe','dllhost.exe','regsvr32.exe','cmd.exe','powershell.exe','pwsh.exe','conhost.exe','rundll32.exe','msiexec.exe','wab.exe','wmpnetwk.exe','imagingdevices.exe','nassrv.exe','sensehdr.exe','mpcmdrun.exe','vpnsetup_x64.exe','7z.exe','gpg.exe','dxsetup.exe')
+    $candidates = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
+    foreach ($e in $exes) {
+        if ($e.Name -match $helperPattern)  { continue }
+        if ($e.Name -match $helperAnywhere) { continue }
+        if ($helperExact -contains $e.Name.ToLowerInvariant()) { continue }
+        if ($e.Name -match '(?i)\.(uninstall|updater|update|crashed|handler|host|installer|setup)\.exe$') { continue }
+        if ($e.Length -le 0) { continue }
+        [void]$candidates.Add($e)
+    }
+    if ($candidates.Count -eq 0) { return $null }
+    $folderName = [System.IO.Path]::GetFileName($Dir.TrimEnd('\'))
+    $folderKey = ($folderName -replace '[^a-zA-Z0-9]', '').ToLowerInvariant()
+    foreach ($c in $candidates) {
+        if (($c.BaseName -replace '[^a-zA-Z0-9]', '').ToLowerInvariant() -eq $folderKey) { return $c.Name }
+    }
+    $prio = @('app','application','launcher','launch','start','main','client','studio','shell','desktop','manager','console','gui','run','player','vmware','virtualbox','vbox')
+    foreach ($p in $prio) {
+        foreach ($c in $candidates) { if ($c.BaseName.ToLowerInvariant() -eq $p) { return $c.Name } }
+    }
+    if ($MinConfidence -eq 'Strong') { return $null }
+    # Token-overlap preference: an executable sharing a meaningful word with the directory
+    # name outranks an unrelated large binary in the final fallback.
+    $folderTokens = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($w in ($folderName -split '[^a-zA-Z0-9]+')) { if ($w.Length -ge 4) { [void]$folderTokens.Add($w) } }
+    if ($folderTokens.Count -gt 0) {
+        $overlaps = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
+        foreach ($c in $candidates) {
+            foreach ($w in ($c.BaseName -split '[^a-zA-Z0-9]+')) {
+                if ($w.Length -ge 4 -and $folderTokens.Contains($w)) { [void]$overlaps.Add($c); break }
+            }
+        }
+        if ($overlaps.Count -gt 0) {
+            $pick = $overlaps | Sort-Object -Property @{ Expression = { $_.BaseName.Length } }, @{ Expression = { $_.Name.Length } } | Select-Object -First 1
+            if ($null -ne $pick) { return $pick.Name }
+        }
+    }
+    $best = $candidates | Sort-Object -Property Length -Descending | Select-Object -First 1
+    if ($null -eq $best) { return $null }
+    return $best.Name
+}
 function Get-UWMProtectedCore {
     $tokens = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($t in @('windows','microsoftedge','webview2','directx','.net','dotnet','visual c++','vcredist','vc_redist','microsoft vc','redistributable','runtime','framework','appruntime','xaml','sdk','driver','windowsapps','windowssecurity','defender','codec','hevc','vp9','av1','secureplayer','store','webexperience','gamebar','crossdevice','overlay','extension')) { [void]$tokens.Add($t) }
-    $roots = @('C:\Windows','C:\Windows\System32','C:\Windows\SysWOW64','C:\Program Files\WindowsApps','C:\Program Files\Common Files\Microsoft','C:\Program Files (x86)\Common Files\Microsoft','C:\Program Files (x86)\Windows Kits','C:\Program Files\Microsoft')
-    return @{ Tokens = $tokens; Roots = $roots }
+    # Loose generic tokens 'runtime' and 'framework' were removed: they blanket-blocked valid
+    # desktop products (hypervisors, developer suites, toolchains). Runtime shims are now
+    # matched precisely via the anchored Shim matrix below instead of by substring.
+    foreach ($t in @('windows','microsoftedge','webview2','directx','.net','dotnet','netfx','visual c++','vcredist','vc_redist','microsoft vc','redistributable','appruntime','xaml','sdk','driver','windowsapps','windowssecurity','defender','codec','hevc','vp9','av1','secureplayer','store','webexperience','gamebar','crossdevice','overlay','extension')) { [void]$tokens.Add($t) }
+    $roots = @('C:\Windows','C:\Windows\System32','C:\Windows\SysWOW64','C:\Windows\WinSxS','C:\Program Files\WindowsApps','C:\Program Files\Common Files\Microsoft','C:\Program Files (x86)\Common Files\Microsoft','C:\Program Files (x86)\Windows Kits','C:\Program Files\Microsoft')
+    return @{ Tokens = $tokens; Roots = $roots; Shim = (Get-UWMOsRuntimeShimPattern) }
 }
 function Test-UWMProtectedCore {
     param($Record, $Protected)
     if ($null -eq $Protected) { return $false }
-    [string]$ann = [string]::Concat([string]$Record.DisplayName, " ", [string]$Record.Id, " ", [string]$Record.InstallLocation)
+    [string]$il = [string]$Record.InstallLocation
+    [string]$op = [string]$Record.OrphanPath
+    # ---- STRICT PATH SHIELD FIRST (authoritative, keyword-independent) ----
+    if (Test-UWMOsShieldPath $il) { return $true }
+    if (Test-UWMOsShieldPath $op) { return $true }
+    foreach ($r in $Protected.Roots) {
+        if (-not [string]::IsNullOrWhiteSpace($il) -and $il.ToLowerInvariant().StartsWith($r.ToLowerInvariant())) { return $true }
+    }
+    [string]$ann = [string]::Concat([string]$Record.DisplayName, " ", [string]$Record.Id, " ", $il)
     [string]$n = $ann.ToLowerInvariant()
+    # ---- PRECISE ANCHORED RUNTIME-SHIM MATCH (replaces the old loose 'runtime'/'framework') ----
+    if ($Protected.Shim -and ($ann -match $Protected.Shim)) { return $true }
     foreach ($t in $Protected.Tokens) {
         [string]$tn = [string]$t
         if ($tn -eq '.net' -or $tn -eq 'dotnet') { if ($n -match '\.net|dotnet') { return $true }; continue }
         if ($tn -eq 'visual c++' -or $tn -eq 'microsoft vc') { if ($n -match 'visual c\+\+|microsoft vc\+\+|vcredist|vc_redist') { return $true }; continue }
         if ($n.IndexOf($tn.ToLowerInvariant()) -ge 0) { return $true }
-    }
-    foreach ($r in $Protected.Roots) {
-        [string]$il = [string]$Record.InstallLocation
-        if (-not [string]::IsNullOrWhiteSpace($il) -and $il.ToLowerInvariant().StartsWith($r.ToLowerInvariant())) { return $true }
     }
     return $false
 }
@@ -7308,6 +7448,170 @@ function Get-UWMYesNo {
         if ($ck -eq 'N' -or $ck -eq 'n') { return $false }
     }
 }
+function Get-UWMUninstallIndex {
+    # ---- SHARED SYSTEMIC UNINSTALL REGISTRY INDEX ----
+    # Single authoritative read of every machine/user uninstall hive. Consumed by both the
+    # Upper Table builder and the filesystem discovery pass so the two can never disagree.
+    $idx = @{
+        Names        = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        Keys         = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        Normalized   = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        Locations    = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+        Shim         = (Get-UWMOsRuntimeShimPattern)
+    }
+    $hives = @(
+        "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
+        "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+        "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
+    )
+    foreach ($hive in $hives) {
+        if (-not (Test-Path $hive)) { continue }
+        try {
+            Get-ChildItem -Path $hive -ErrorAction SilentlyContinue | ForEach-Object {
+                try {
+                    $p = Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue
+                    if (-not [string]::IsNullOrWhiteSpace($p.PackageFullName))   { return }
+                    if (-not [string]::IsNullOrWhiteSpace($p.PackageFamilyName)) { return }
+                    if ($p.InstallLocation -and $p.InstallLocation -match '(?i)\\WindowsApps\\') { return }
+                    if ($p.SystemComponent -eq 1) { return }
+                    if (-not [string]::IsNullOrWhiteSpace($p.ParentKeyName))    { return }
+                    if ($p.DisplayName)         { [void]$idx.Names.Add([string]$p.DisplayName) }
+                    if ($_.PSChildName)         { [void]$idx.Keys.Add([string]$_.PSChildName) }
+                    if ($p.InstallLocation) {
+                        $loc = ([string]$p.InstallLocation).TrimEnd('\')
+                        if ($loc) { [void]$idx.Locations.Add($loc) }
+                    }
+                    $clean = ("$($p.DisplayName) $($_.PSChildName)" -replace '[^a-zA-Z0-9]', '').ToLowerInvariant()
+                    if ($clean.Length -gt 2) { [void]$idx.Normalized.Add($clean) }
+                } catch {}
+            }
+        } catch {}
+    }
+    return $idx
+}
+function Get-UWMFilesystemApps {
+    # ---- UPPER-TABLE FILESYSTEM DISCOVERY PASS ----
+    # Walks the master roots (C:\Program Files, C:\Program Files (x86)) to a bounded depth and
+    # surfaces any robust directory that owns a genuine launchable .exe entry point. Candidates
+    # are verified against the systemic uninstall registries; those already represented by a
+    # hive entry are skipped, and the remainder are mapped DIRECTLY into the Upper Table
+    # (IsOrphan = $false) instead of being silently skipped or demoted to the Lower Table.
+    # $NestedRobustFloorMB: minimum footprint for a vendor-nested directory that has no
+    # name-keyed launcher. Filters hardware payload / helper sub-folders without discarding
+    # large genuine suites whose launcher name differs from the folder name.
+    param($Index)
+    [int]$NestedRobustFloorMB = 25
+    $found = [System.Collections.Generic.List[hashtable]]::new()
+    if ($null -eq $Index) { $Index = Get-UWMUninstallIndex }
+    $masterRoots = [System.Collections.Generic.List[string]]::new()
+    foreach ($mr in @('C:\Program Files', 'C:\Program Files (x86)', $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432)) {
+        if ([string]::IsNullOrWhiteSpace($mr)) { continue }
+        $mrTrim = $mr.TrimEnd('\')
+        $dup = $false
+        foreach ($existing in $masterRoots) { if ($existing -ieq $mrTrim) { $dup = $true; break } }
+        if (-not $dup) { [void]$masterRoots.Add($mrTrim) }
+    }
+    $seenPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($loc in $Index.Locations) { [void]$seenPaths.Add($loc) }
+    $accepted = 0
+    foreach ($root in $masterRoots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        if (Test-UWMOsShieldPath $root) { continue }
+        $level1 = $null
+        try { $level1 = @(Get-ChildItem -LiteralPath $root -Directory -Force -ErrorAction SilentlyContinue) } catch { $level1 = @() }
+        foreach ($d1 in $level1) {
+            if (Test-UWMReparsePoint $d1) { continue }
+            if (Test-UWMExcludedPath $d1.FullName) { continue }
+            if (Test-UWMOsShieldPath $d1.FullName) { continue }
+            $candidates = [System.Collections.Generic.List[object]]::new()
+            [void]$candidates.Add($d1)
+            # Bounded second level: captures vendor-nested suites (e.g. VMware\VMware Workstation).
+            $hasDirectExe = $null -ne (Get-UWMLaunchExeName -Dir $d1.FullName)
+            if (-not $hasDirectExe) {
+                $level2 = $null
+                try { $level2 = @(Get-ChildItem -LiteralPath $d1.FullName -Directory -Force -ErrorAction SilentlyContinue) } catch { $level2 = @() }
+                if ($level2.Count -le 64) { foreach ($d2 in $level2) { [void]$candidates.Add($d2) } }
+            }
+            [int]$slot = 0
+            foreach ($dir in $candidates) {
+                $isNested = ($slot -gt 0)
+                $slot++
+                if (Test-UWMReparsePoint $dir) { continue }
+                if (Test-UWMExcludedPath $dir.FullName) { continue }
+                if (Test-UWMOsShieldPath $dir.FullName) { continue }
+                if (Test-UWMInboxOsComponent $dir.FullName) { continue }
+                # Shared runtime containers are not standalone applications.
+                $leafKey = ($dir.Name -replace '[^a-zA-Z0-9]', '').ToLowerInvariant()
+                if ($leafKey -eq 'commonfiles' -or $leafKey -eq 'dotnet') { continue }
+                # A robust application root carries a meaningful directory name; reject stubs
+                # such as "7", "AC", "x64" that only ever wrap payloads or SDK fragments.
+                if ($leafKey.Length -lt 3) { continue }
+                if ($leafKey -match '(container|loader|firmware|redist|hal$|^hal|_hal|drv$|^drv|driver)') { continue }
+                $dirPath = $dir.FullName.TrimEnd('\')
+                if ($seenPaths.Contains($dirPath)) { continue }
+                $exeName = Get-UWMLaunchExeName -Dir $dirPath
+                if ([string]::IsNullOrWhiteSpace($exeName)) { continue }
+                $sizeMB = 0
+                try {
+                    $sum = (Get-ChildItem -LiteralPath $dirPath -Recurse -File -ErrorAction SilentlyContinue |
+                            Measure-Object -Property Length -Sum -ErrorAction SilentlyContinue).Sum
+                    if ($sum) { $sizeMB = [Math]::Round($sum / 1MB, 2) }
+                } catch {}
+                if ($isNested) {
+                    # Vendor-nested acceptance: a name-keyed/canonical launcher, or an otherwise
+                    # robust directory footprint. Small helper sub-folders are refused outright.
+                    $strong = Get-UWMLaunchExeName -Dir $dirPath -MinConfidence 'Strong'
+                    if ([string]::IsNullOrWhiteSpace($strong)) {
+                        if ($sizeMB -lt $NestedRobustFloorMB) { continue }
+                    }
+                }
+                $folderName = $dir.Name
+                $ann = "$folderName $exeName"
+                # Native OS runtime shims never enter the Upper Table.
+                if ($ann -match $Index.Shim) { continue }
+                if (Test-UWMOsShieldPath $dirPath) { continue }
+                $norm = ($ann -replace '[^a-zA-Z0-9]', '').ToLowerInvariant()
+                if ($norm.Length -le 2) { continue }
+                # ---- Systemic uninstall cross-verification ----
+                $registered = $false
+                if ($Index.Normalized.Contains($norm)) { $registered = $true }
+                if (-not $registered) {
+                    foreach ($rn in $Index.Names) {
+                        $rnClean = ($rn -replace '[^a-zA-Z0-9]', '').ToLowerInvariant()
+                        if ($rnClean.Length -le 3) { continue }
+                        if ($norm -eq $rnClean) { $registered = $true; break }
+                    }
+                }
+                if (-not $registered) {
+                    foreach ($rk in $Index.Keys) {
+                        $rkClean = ($rk -replace '[^a-zA-Z0-9]', '').ToLowerInvariant()
+                        if ($rkClean.Length -le 3) { continue }
+                        if ($norm.Contains($rkClean) -or $rkClean.Contains($norm)) { $registered = $true; break }
+                    }
+                }
+                # Already represented by a hive entry -> the registry pass owns the listing.
+                if ($registered) { continue }
+                [void]$seenPaths.Add($dirPath)
+                $found.Add(@{
+                    Id                   = ("FS_{0}" -f ($folderName -replace '[^a-zA-Z0-9]', ''))
+                    DisplayName          = $folderName
+                    InstallLocation      = $dirPath
+                    UninstallString      = $null
+                    QuietUninstallString = $null
+                    IsOrphan             = $false
+                    OrphanPath           = $null
+                    SizeMB               = $sizeMB
+                    Launcher             = $exeName
+                })
+                $accepted++
+            }
+        }
+    }
+    if ($accepted -gt 0) {
+        try { Write-Log -Action "SHREDDER_FS_DISCOVERY" -Target "SHREDDER" -Status "Info" -Details ("Mapped {0} launchable application root(s) from Program Files into the Upper Table" -f $accepted) } catch { }
+    }
+    return $found
+}
 function Get-UWMInstalledApps {
     $RegPaths = @(
         "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*",
@@ -7315,6 +7619,7 @@ function Get-UWMInstalledApps {
         "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\*"
     )
     $apps = [System.Collections.Generic.List[hashtable]]::new()
+    $Shim = Get-UWMOsRuntimeShimPattern
     $InstalledApps = Get-ItemProperty $RegPaths -ErrorAction SilentlyContinue |
                      Where-Object {
                          $_.DisplayName -and ($_.PSChildName -or $_.UninstallString) -and
@@ -7326,7 +7631,13 @@ function Get-UWMInstalledApps {
                      }
     foreach ($app in ($InstalledApps | Sort-Object DisplayName)) {
         $appAnn = "$($app.DisplayName) $($app.PSChildName)"
-        if ($appAnn -match '(?i)(VCLibs|Runtime|Framework|Xaml|SDK|DirectX|\.NET|Redistributable|Extension|Codec|Overlay|GameBar|CrossDevice|Store|WebMedia|WebExperience|HEIFImage|HEVCVideo|VP9|AV1|SecurePlayer)') { continue }
+        # ---- REVISED EXCLUSION POLICY ----
+        # The former blanket substring block (VCLibs|Runtime|Framework|Xaml|SDK|DirectX|.NET|
+        # Redistributable|Extension|Codec|Overlay|GameBar|CrossDevice|Store|WebMedia|
+        # WebExperience|HEIFImage|HEVCVideo|VP9|AV1|SecurePlayer) silently dropped valid desktop
+        # products. It is replaced by the anchored runtime-shim matrix plus a strict path shield.
+        if ($appAnn -match $Shim) { continue }
+        if (Test-UWMOsShieldPath ([string]$app.InstallLocation)) { continue }
         $apps.Add(@{
             Id                   = if ($app.PSChildName) { $app.PSChildName } else { $app.DisplayName }
             DisplayName          = $app.DisplayName
@@ -7336,12 +7647,19 @@ function Get-UWMInstalledApps {
             IsOrphan             = $false
             OrphanPath           = $null
             SizeMB               = 0
+            Launcher             = $null
         })
     }
+    # ---- SUPPLEMENTAL UPPER-TABLE PASS ----
+    # Registered suites blocked by nothing above are present; anything the hives missed but that
+    # owns a launchable .exe under the master roots is verified and mapped in here.
+    $Index = Get-UWMUninstallIndex
+    foreach ($fs in (Get-UWMFilesystemApps -Index $Index)) { $apps.Add($fs) }
     return $apps
 }
 function Get-UWMOrphanGhosts {
     $GhostScanRoots = @("C:\Program Files", "C:\Program Files (x86)", $env:LOCALAPPDATA, $env:APPDATA)
+    $ShimPattern = Get-UWMOsRuntimeShimPattern
     $SystemSids = @('S-1-5-18', 'S-1-5-19', 'S-1-5-20')
     $ServiceSidPrefix = 'S-1-5-80-'
     $AdminSid = 'S-1-5-32-544'
@@ -7478,6 +7796,19 @@ function Get-UWMOrphanGhosts {
             }
         }
         if ($isRegistered) { return $null }
+        # ---- STANDALONE APPLICATION GUARD ----
+        # A directory owning a genuine launchable .exe under a master root is an application,
+        # not an orphan footprint. Verified against the systemic uninstall registries by
+        # Get-UWMFilesystemApps, so it belongs in the Upper Table and must never be demoted here.
+        if ($dir.Parent -and ($dir.Parent.FullName -ieq 'C:\Program Files' -or $dir.Parent.FullName -ieq 'C:\Program Files (x86)')) {
+            $probeExe = Get-UWMLaunchExeName -Dir $dir.FullName
+            if (-not [string]::IsNullOrWhiteSpace($probeExe)) {
+                $probeAnn = "$($dir.Name) $probeExe"
+                if ($probeAnn -notmatch $ShimPattern) {
+                    if (-not (Test-UWMInboxOsComponent $dir.FullName)) { return $null }
+                }
+            }
+        }
         $sizeMB = 0
         try {
             $sizeBytes = (Get-ChildItem -Path $dir.FullName -Recurse -File -ErrorAction SilentlyContinue |
@@ -7745,28 +8076,44 @@ function Grant-UWMAclWipeAll {
 
 # ---- Scenario C: Kernel Boot Vaporization — PendingFileRenameOperations registration ----
 function Register-UWMPendingBootDeletion {
+    # Queues paths for deletion by the NT kernel Session Manager at next boot.
+    # REG_MULTI_SZ is an ORDERED (source, destination) pair list. The destination MUST be an
+    # empty string to signal deletion; the previous implementation queued "\??\" as the
+    # destination, which asks the kernel to RENAME onto the root device instead of deleting.
+    # Written through the raw registry API so empty pair elements survive serialisation.
     param([string[]]$Paths)
     if (-not $Paths -or $Paths.Count -eq 0) { return 0 }
-    $pendingKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager"
-    $pendingVal = Get-ItemProperty -Path $pendingKey -Name "PendingFileRenameOperations" -ErrorAction SilentlyContinue
-    $entries = if ($pendingVal -and $pendingVal.PendingFileRenameOperations) { @($pendingVal.PendingFileRenameOperations) } else { @() }
     $queued = 0
-    foreach ($p in $Paths) {
+    try {
+        $rk = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager', $true)
+        if ($null -eq $rk) { return 0 }
         try {
-            if (-not (Test-Path -LiteralPath $p)) { continue }
-            if (($entries -contains "\??\$p") -and ($entries -contains "\??\")) { continue }
-            $entries += "\??\$p"
-            $entries += "\??\"
-            $queued++
-        } catch {}
-    }
-    if ($queued -gt 0) {
-        try {
-            Set-ItemProperty -Path $pendingKey -Name "PendingFileRenameOperations" -Value $entries -Type MultiString -ErrorAction Stop
-        } catch {
-            Write-Host ("    -> [WARN] PendingFileRenameOperations write failed: {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow
-            return 0
-        }
+            $list = [System.Collections.Generic.List[string]]::new()
+            $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+            $cur = $rk.GetValue('PendingFileRenameOperations', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if ($cur) {
+                foreach ($v in [string[]]$cur) {
+                    $sv = [string]$v
+                    [void]$list.Add($sv)
+                    if (-not [string]::IsNullOrEmpty($sv)) { [void]$seen.Add($sv) }
+                }
+            }
+            foreach ($p in $Paths) {
+                if ([string]::IsNullOrWhiteSpace($p)) { continue }
+                $src = "\??\$p"
+                if ($seen.Contains($src)) { continue }
+                [void]$list.Add($src)
+                [void]$list.Add('')
+                [void]$seen.Add($src)
+                $queued++
+            }
+            if ($queued -gt 0) {
+                $rk.SetValue('PendingFileRenameOperations', $list.ToArray(), [Microsoft.Win32.RegistryValueKind]::MultiString)
+            }
+        } finally { $rk.Close() }
+    } catch {
+        Write-Host ("    -> [WARN] PendingFileRenameOperations write failed: {0}" -f $_.Exception.Message) -ForegroundColor DarkYellow
+        return 0
     }
     return $queued
 }
@@ -7791,6 +8138,256 @@ function Invoke-UWMLockedPathContainment {
     } catch { return $false }
 }
 
+# ---- TARGET BOUNDARY RESOLUTION (64-bit + WOW64 x86 architecture aware) ----
+function Get-UWMSafeShredRoot {
+    # Validates a candidate obliteration boundary. Returns the normalised absolute directory, or
+    # $null when the path is shielded, is a drive/master root, or is too shallow to be a real
+    # application folder. Guarantees the wipe can never walk up into a parent vendor directory.
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+    $raw = $Path.Trim().Trim('"')
+    try { $full = [System.IO.Path]::GetFullPath($raw) } catch { return $null }
+    $full = $full.TrimEnd('\')
+    if ([string]::IsNullOrWhiteSpace($full)) { return $null }
+    # ---- Platform safeguards: native OS shield + user-data exclusion ----
+    if (Test-UWMOsShieldPath $full) { return $null }
+    if (Test-UWMExcludedPath $full) { return $null }
+    if ($full -notmatch '^[A-Za-z]:\\') { return $null }
+    $drive = $full.Substring(0, 3)
+    if ($full -ieq $drive) { return $null }
+    $masterRoots = [System.Collections.Generic.List[string]]::new()
+    foreach ($mr in @('C:\Program Files', 'C:\Program Files (x86)', $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432, $env:LOCALAPPDATA, $env:APPDATA, $env:ProgramData)) {
+        if ([string]::IsNullOrWhiteSpace($mr)) { continue }
+        try { $t = ([System.IO.Path]::GetFullPath($mr.Trim())).TrimEnd('\') } catch { continue }
+        if ($t) { [void]$masterRoots.Add($t) }
+    }
+    foreach ($mr in $masterRoots) {
+        # Never vaporize a master root itself (C:\Program Files, %LOCALAPPDATA%, ...).
+        if ($full -ieq $mr) { return $null }
+    }
+    # Require at least one directory segment below the drive root so a top-level
+    # system folder can never be selected as a target.
+    $rel = $full.Substring(3)
+    if ([string]::IsNullOrWhiteSpace($rel) -or -not $rel.Contains('\')) { return $null }
+    return $full
+}
+# ---- PROCESS PATH INDEX (image path resolution for strict containment) ----
+function Get-UWMProcessPathIndex {
+    $index = @{}
+    try {
+        foreach ($p in @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)) {
+            if ($null -eq $p.ProcessId) { continue }
+            [int]$procId = [int]$p.ProcessId
+            $index[$procId] = [PSCustomObject]@{
+                Pid    = $procId
+                Name   = [string]$p.Name
+                Path   = [string]$p.ExecutablePath
+                Parent = [int]$p.ParentProcessId
+            }
+        }
+    } catch {}
+    try {
+        foreach ($p in @(Get-Process -ErrorAction SilentlyContinue)) {
+            [int]$procId = [int]$p.Id
+            if ($procId -le 4) { continue }
+            $imgPath = $null
+            try { $imgPath = $p.Path } catch {}
+            if ($index.ContainsKey($procId)) {
+                if ([string]::IsNullOrWhiteSpace($index[$procId].Path) -and $imgPath) {
+                    $index[$procId].Path = [string]$imgPath
+                }
+            } else {
+                $index[$procId] = [PSCustomObject]@{
+                    Pid    = $procId
+                    Name   = [string]$p.ProcessName
+                    Path   = [string]$imgPath
+                    Parent = 0
+                }
+            }
+        }
+    } catch {}
+    return $index
+}
+function Test-UWMCriticalProcess {
+    # Defence-in-depth: these kernel/session-critical processes must never be terminated by the
+    # shredder even when they appear as descendants of a bound target process.
+    param($Name, [int]$ProcId)
+    if ($ProcId -le 4) { return $true }
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
+    $leaf = ([string]$Name)
+    if ($leaf -match '\.exe$') { $leaf = $leaf.Substring(0, $leaf.Length - 4) }
+    $leaf = $leaf.ToLowerInvariant()
+    if ($script:UWMCriticalProcessNames -contains $leaf) { return $true }
+    return $false
+}
+function Get-UWMProcessTreeUnder {
+    # Every process whose image lives inside $Dir, plus all descendants, ordered
+    # deepest-first so children are terminated before their parents.
+    param([string]$Dir, $Index)
+    if (-not $script:UWMCriticalProcessNames) {
+        $script:UWMCriticalProcessNames = @(
+            'wininit','winlogon','csrss','lsass','services','smss','svchost','security','system',
+            'registry','memcompression','lsm','dwm','spoolsv','sihost','ctfmon','fontdrvhost',
+            'dllhost','taskhostw','sihost','wudfhost','conhost','smartscreen','startmenuexplorer'
+        )
+    }
+    $prefix = $Dir.TrimEnd('\') + '\'
+    $set = [System.Collections.Generic.HashSet[int]]::new()
+    foreach ($k in $Index.Keys) {
+        $e = $Index[$k]
+        if ([int]$e.Pid -le 4) { continue }
+        if (Test-UWMCriticalProcess -Name $e.Name -ProcId ([int]$e.Pid)) { continue }
+        if ([string]::IsNullOrWhiteSpace($e.Path)) { continue }
+        if ($e.Path.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { [void]$set.Add([int]$e.Pid) }
+    }
+    if ($set.Count -eq 0) { return @() }
+    $changed = $true
+    $guard = 0
+    while ($changed -and $guard -lt 64) {
+        $changed = $false
+        $guard++
+        foreach ($k in $Index.Keys) {
+            $e = $Index[$k]
+            if ($set.Contains([int]$e.Pid)) { continue }
+            if ($e.Parent -le 4 -or -not $set.Contains([int]$e.Parent)) { continue }
+            # Never absorb a kernel-critical descendant, and never traverse through one.
+            if (Test-UWMCriticalProcess -Name $e.Name -ProcId ([int]$e.Pid)) { continue }
+            [void]$set.Add([int]$e.Pid)
+            $changed = $true
+        }
+    }
+    $depth = @{}
+    foreach ($procId in @($set)) {
+        $d = 0
+        $cur = [int]$procId
+        $g2 = 0
+        while ($g2 -lt 64) {
+            $e = $Index[$cur]
+            if ($null -eq $e) { break }
+            $par = [int]$e.Parent
+            if ($par -le 4 -or -not $set.Contains($par)) { break }
+            $cur = $par
+            $d++
+            $g2++
+            if ($depth.ContainsKey($cur)) { $d += [int]$depth[$cur]; break }
+        }
+        $depth[$procId] = $d
+    }
+    return @(@($set) | Sort-Object -Property @{ Expression = { $depth[$_] } } -Descending)
+}
+function Stop-UWMProcessTreeUnder {
+    # Asynchronous process watchdog: freeze every bound process (defeats self-restarting
+    # watchdogs), then terminate the whole hierarchy children-first.
+    param([string]$Dir)
+    $index = Get-UWMProcessPathIndex
+    $tree = @(Get-UWMProcessTreeUnder -Dir $Dir -Index $index)
+    if ($tree.Count -eq 0) { return 0 }
+    foreach ($procId in $tree) {
+        if ($procId -le 4) { continue }
+        try { $null = Suspend-UWMProcessTree -Id $procId } catch {}
+    }
+    $killed = 0
+    foreach ($procId in $tree) {
+        if ($procId -le 4) { continue }
+        try {
+            $e = $index[$procId]
+            if (Test-UWMCriticalProcess -Name $e.Name -ProcId ([int]$procId)) { continue }
+            Write-Host ("    -> [TREE] Terminating {0} (PID {1}) bound to target folder" -f $e.Name, $procId) -ForegroundColor Yellow
+            Stop-Process -Id $procId -Force -ErrorAction Stop
+            $killed++
+        } catch {
+            try {
+                $null = Suspend-UWMProcessTree -Id $procId
+                Start-Sleep -Milliseconds 120
+                Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+                if (-not (Get-Process -Id $procId -ErrorAction SilentlyContinue)) { $killed++ }
+            } catch {}
+        }
+    }
+    return $killed
+}
+# ---- BOUND KERNEL OBJECTS (services + drivers whose image lives inside the target) ----
+function Get-UWMBoundKernelObjects {
+    param([string]$Dir)
+    $result = [System.Collections.Generic.List[hashtable]]::new()
+    $svcRoot = "HKLM:\SYSTEM\CurrentControlSet\Services"
+    if (-not (Test-Path $svcRoot)) { return $result }
+    $prefix = $Dir.TrimEnd('\') + '\'
+    foreach ($k in @(Get-ChildItem -Path $svcRoot -ErrorAction SilentlyContinue)) {
+        try {
+            $p = Get-ItemProperty -Path $k.PSPath -ErrorAction SilentlyContinue
+            $img = [string]$p.ImagePath
+            if ([string]::IsNullOrWhiteSpace($img)) { continue }
+            $exe = $img
+            $qm = [regex]::Match($exe, '^"([^"]+)"')
+            if ($qm.Success) {
+                $exe = $qm.Groups[1].Value
+            } else {
+                $exe = ($exe -split '(?<=\.exe)\s+')[0]
+            }
+            $exe = $exe.Trim()
+            $exe = $exe -replace '^\\\?\?\\', '' -replace '^\\\\', '' -replace '^/', '\'
+            $exe = $exe -replace '(?i)^\\SystemRoot', $env:WINDIR -replace '(?i)^\\Windows', $env:WINDIR
+            if ([string]::IsNullOrWhiteSpace($exe)) { continue }
+            # Strict containment: the service image must live inside the target folder.
+            if (-not $exe.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            $svcType = 0
+            try { $svcType = [int]$p.Type } catch {}
+            $result.Add(@{ Name = [string]$k.PSChildName; ImagePath = $exe; IsDriver = ($svcType -eq 1 -or $svcType -eq 2) })
+        } catch {}
+    }
+    return $result
+}
+function Stop-UWMBoundKernelObjects {
+    # Halts and disables only those service/driver objects whose binary is inside $Dir.
+    param([string]$Dir)
+    $objs = @(Get-UWMBoundKernelObjects -Dir $Dir)
+    if ($objs.Count -eq 0) { return 0 }
+    $handled = 0
+    foreach ($o in $objs) {
+        $svcName = [string]$o.Name
+        if ([string]::IsNullOrWhiteSpace($svcName)) { continue }
+        try {
+            if ($o.IsDriver) {
+                Write-Host ("    -> [DRV] Halting bound kernel driver: {0}" -f $svcName) -ForegroundColor Yellow
+                Start-Process sc.exe -ArgumentList ("stop `"{0}`"" -f $svcName) -NoNewWindow -Wait -ErrorAction SilentlyContinue
+            } else {
+                $state = $null
+                try { $state = (Get-Service -Name $svcName -ErrorAction SilentlyContinue).Status } catch {}
+                if ($state -and $state -ne 'Stopped') {
+                    Write-Host ("    -> [SVC] Stopping bound service: {0}" -f $svcName) -ForegroundColor Yellow
+                    Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue
+                }
+            }
+            Set-ItemProperty -Path ("HKLM:\SYSTEM\CurrentControlSet\Services\{0}" -f $svcName) -Name "Start" -Value 4 -ErrorAction SilentlyContinue
+            $handled++
+        } catch {}
+    }
+    return $handled
+}
+# ---- LOCKED RESIDUE BOOT EVAPORATION (Scenario C failsafe for surviving objects) ----
+function Register-UWMResidueBootEvaporation {
+    # Enumerates every object that survived the physical wipe inside $Dir and queues the whole
+    # set into the NT kernel PendingFileRenameOperations hive for boot-time evaporation.
+    param([string]$Dir, [int]$Cap = 4000)
+    $safe = Get-UWMSafeShredRoot -Path $Dir
+    if ($null -eq $safe) { return 0 }
+    if (-not (Test-Path -LiteralPath $safe)) { return 0 }
+    $survivors = [System.Collections.Generic.List[string]]::new()
+    [void]$survivors.Add($safe)
+    try {
+        foreach ($f in @(Get-ChildItem -LiteralPath $safe -Recurse -Force -ErrorAction SilentlyContinue)) {
+            if ($survivors.Count -ge $Cap) { break }
+            [void]$survivors.Add($f.FullName)
+        }
+    } catch {}
+    $ordered = @($survivors | Sort-Object -Property Length -Descending)
+    $q = Register-UWMPendingBootDeletion -Paths $ordered
+    if ($q -gt 0) {
+        Write-Host ("    -> [BOOT] {0} locked residue object(s) registered in PendingFileRenameOperations — evaporation on next boot" -f $q) -ForegroundColor DarkCyan
+    }
+    return $q
+}
 function Invoke-UWMShredTarget {
     param($Record)
     $TargetIdToWipe        = $Record.Id
@@ -7834,10 +8431,20 @@ function Invoke-UWMShredTarget {
     Write-Host " [1/5] Discovering bound services, killing processes, unregistering DLLs..." -ForegroundColor Yellow
 
     $TargetInstallDir = $null
+    $IsFsPayload = ([string]$TargetIdToWipe -like 'FS_*')
     if ($TargetIsOrphan -and -not [string]::IsNullOrEmpty($TargetOrphanPath)) {
         $TargetInstallDir = $TargetOrphanPath
-    } elseif (-not [string]::IsNullOrEmpty($TargetInstallLocation) -and (Test-Path $TargetInstallLocation)) {
-        $TargetInstallDir = $TargetInstallLocation
+    } elseif ($IsFsPayload -or (-not [string]::IsNullOrEmpty($TargetInstallLocation) -and (Test-Path -LiteralPath $TargetInstallLocation))) {
+        # ---- DIRECT PHYSICAL BINDING (filesystem discovery payloads, 64-bit + WOW64 x86) ----
+        # A confirmed Upper Table path bypasses the registry-key loop entirely: FS_ payloads have
+        # no UninstallString/PSChildName by construction, so registry derivation always returns null.
+        $TargetInstallDir = Get-UWMSafeShredRoot -Path $TargetInstallLocation
+        if ($null -eq $TargetInstallDir) {
+            Write-Host ("    -> [SHIELD] Target refused by OS / exclusion boundary matrix: {0}" -f $TargetInstallLocation) -ForegroundColor Red
+            return "SHIELDED"
+        }
+        $arch = if ($TargetInstallDir -like 'C:\Program Files (x86)\*') { 'WOW64-x86' } else { 'x64' }
+        Write-Host ("    -> [BIND] Payload bound to confirmed physical path [{0}]: {1}" -f $arch, $TargetInstallDir) -ForegroundColor DarkCyan
     } else {
         $RegScanRoots = @("HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall","HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall","HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall")
         foreach ($regRoot in $RegScanRoots) {
@@ -7861,22 +8468,36 @@ function Invoke-UWMShredTarget {
     $SvcTargets = [System.Collections.Generic.List[hashtable]]::new()
     $svcRoot = "HKLM:\SYSTEM\CurrentControlSet\Services"
     if ((Test-Path $svcRoot) -and -not [string]::IsNullOrWhiteSpace($TargetInstallDir)) {
-        foreach ($keyword in $TargetKeywords) {
-            Get-ChildItem -Path $svcRoot -ErrorAction SilentlyContinue | ForEach-Object {
-                try {
-                    $svcProps = Get-ItemProperty -Path $_.PSPath -ErrorAction SilentlyContinue
-                    $imgPath = $svcProps.ImagePath
-                    if ($imgPath -and ($imgPath -match [regex]::Escape($TargetInstallDir) -or $imgPath -match [regex]::Escape($keyword))) {
-                        $svcName = $_.PSChildName
-                        $svcStatus = 'Unknown'
-                        try { $svcStatus = (Get-Service -Name $svcName -ErrorAction SilentlyContinue).Status } catch {}
-                        if (-not ($SvcTargets | Where-Object { $_.Name -eq $svcName })) {
-                            $SvcTargets.Add(@{ Name = $svcName; Status = $svcStatus })
-                            Write-Host "    -> [AUDIT] Service bound to target: $svcName — Status: $svcStatus" -ForegroundColor DarkYellow
-                        }
-                    }
-                } catch {}
+        foreach ($bound in (Get-UWMBoundKernelObjects -Dir $TargetInstallDir)) {
+            $svcName = [string]$bound.Name
+            $svcStatus = 'Unknown'
+            try { $svcStatus = (Get-Service -Name $svcName -ErrorAction SilentlyContinue).Status } catch {}
+            if (-not ($SvcTargets | Where-Object { $_.Name -eq $svcName })) {
+                $SvcTargets.Add(@{ Name = $svcName; Status = $svcStatus })
+                Write-Host "    -> [AUDIT] Service/driver bound inside target folder: $svcName — Status: $svcStatus" -ForegroundColor DarkYellow
             }
+        }
+    }
+
+    # ---- PATH-SCOPED ASYNCHRONOUS WATCHDOG + BOUND KERNEL OBJECT CONTAINMENT ----
+    # Strictly scoped to the confirmed target folder: every executable handle beneath it is
+    # enumerated, its full process hierarchy destroyed, and every service/driver whose image
+    # resides inside the folder is halted, unlinked and disabled before vaporization begins.
+    if (-not [string]::IsNullOrWhiteSpace($TargetInstallDir) -and (Test-Path -LiteralPath $TargetInstallDir)) {
+        $treeKilled = Stop-UWMProcessTreeUnder -Dir $TargetInstallDir
+        if ($treeKilled -gt 0) {
+            Write-Host ("    -> [TREE] Asynchronous watchdog annihilated {0} process handle(s) bound to the target folder hierarchy." -f $treeKilled) -ForegroundColor Green
+        }
+        $kobjHandled = Stop-UWMBoundKernelObjects -Dir $TargetInstallDir
+        if ($kobjHandled -gt 0) {
+            Write-Host ("    -> [KOBJ] {0} bound service/driver object(s) halted, unlinked and disabled." -f $kobjHandled) -ForegroundColor Green
+        }
+        $boundExeCount = 0
+        try {
+            $boundExeCount = @(Get-ChildItem -LiteralPath $TargetInstallDir -Filter '*.exe' -Recurse -File -Force -ErrorAction SilentlyContinue).Count
+        } catch {}
+        if ($boundExeCount -gt 0) {
+            Write-Host ("    -> [SCAN] {0} executable handle(s) enumerated inside target folder for hierarchy teardown." -f $boundExeCount) -ForegroundColor DarkCyan
         }
     }
 
@@ -7973,19 +8594,31 @@ function Invoke-UWMShredTarget {
             }
         }
     }
-    foreach ($keyword in $TargetKeywords) {
-        try {
-            $svcs = Get-Service -Name "*$keyword*" -ErrorAction SilentlyContinue
-            foreach ($svc in $svcs) {
-                try {
-                    Write-Host "    -> Forcefully stopping service: $($svc.Name)" -ForegroundColor Yellow
-                    Stop-Service -Name $svc.Name -Force -ErrorAction Stop
-                    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$($svc.Name)" -Name "Start" -Value 4 -ErrorAction SilentlyContinue
-                } catch {
-                    Write-Host "    -> [WARN] Could not stop service $($svc.Name): $($_.Exception.Message)" -ForegroundColor DarkYellow
+    # Secondary service sweep. When a bound folder is known this is filtered to services whose
+    # binary actually resides inside that folder; the previous name-wildcard form could halt
+    # unrelated operating system services whenever a keyword such as "Runtime" or "SDK" matched.
+    if ([string]::IsNullOrWhiteSpace($TargetInstallDir)) {
+        foreach ($keyword in $TargetKeywords) {
+            try {
+                $svcs = Get-Service -Name "*$keyword*" -ErrorAction SilentlyContinue
+                foreach ($svc in $svcs) {
+                    try {
+                        Write-Host "    -> Forcefully stopping service: $($svc.Name)" -ForegroundColor Yellow
+                        Stop-Service -Name $svc.Name -Force -ErrorAction Stop
+                        Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Services\$($svc.Name)" -Name "Start" -Value 4 -ErrorAction SilentlyContinue
+                    } catch {
+                        Write-Host "    -> [WARN] Could not stop service $($svc.Name): $($_.Exception.Message)" -ForegroundColor DarkYellow
+                    }
                 }
-            }
-        } catch {}
+            } catch {}
+        }
+    } else {
+        foreach ($bound in (Get-UWMBoundKernelObjects -Dir $TargetInstallDir)) {
+            $svcName = [string]$bound.Name
+            try {
+                Set-ItemProperty -Path ("HKLM:\SYSTEM\CurrentControlSet\Services\{0}" -f $svcName) -Name "Start" -Value 4 -ErrorAction SilentlyContinue
+            } catch {}
+        }
     }
 
     $prefDir = Join-Path $env:WINDIR "Prefetch"
@@ -8039,6 +8672,7 @@ function Invoke-UWMShredTarget {
                     Write-Host "    -> [OK] Orphan ghost annihilated: $TargetOrphanPath" -ForegroundColor Green
                 } else {
                     Write-Host "    -> [WARN] Partial removal — still resident: $TargetOrphanPath" -ForegroundColor DarkYellow
+                    try { $null = Register-UWMResidueBootEvaporation -Dir $TargetOrphanPath } catch {}
                 }
             } else {
                 Write-Host "    -> [INFO] Orphan path no longer exists on filesystem." -ForegroundColor DarkYellow
@@ -8048,11 +8682,24 @@ function Invoke-UWMShredTarget {
         }
     } else {
         $ResolvedPaths = [System.Collections.Generic.List[string]]::new()
+        # ---- DIRECT BOUND PATH (filesystem discovery payloads) ----
+        # The confirmed Upper Table folder is queued first and obliteration runs against that
+        # exact path. Vendor-nested suites (e.g. "Program Files (x86)\VMware\VMware Workstation")
+        # are unreachable by the depth-1 keyword fallback, so this binding is what makes
+        # targeted annihilation absolute. The parent vendor directory is never a candidate.
+        if (-not [string]::IsNullOrWhiteSpace($TargetInstallDir)) {
+            $boundPath = Get-UWMSafeShredRoot -Path $TargetInstallDir
+            if ($null -ne $boundPath -and (Test-Path -LiteralPath $boundPath)) {
+                [void]$ResolvedPaths.Add($boundPath)
+                Write-Host ("    -> [BOUND] Confirmed physical payload root queued for obliteration: {0}" -f $boundPath) -ForegroundColor Red
+            }
+        }
         $RegistryPathRoots = @(
             "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
             "HKLM:\Software\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
             "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall"
         )
+        if ($ResolvedPaths.Count -eq 0) {
         foreach ($regRoot in $RegistryPathRoots) {
             if (-not (Test-Path $regRoot)) { continue }
             try {
@@ -8103,6 +8750,7 @@ function Invoke-UWMShredTarget {
                 }
             } catch {}
         }
+        }
         $ResolvedPaths = $ResolvedPaths | Sort-Object -Unique
         $resolvedWiped = 0
         foreach ($rPath in $ResolvedPaths) {
@@ -8123,6 +8771,10 @@ function Invoke-UWMShredTarget {
                     Write-Host "    -> [PENDING] Path locked by ring-0 protection — staging containment envelope..." -ForegroundColor DarkYellow
                     try {
                         $null = Invoke-UWMLockedPathContainment -Path $rPath
+                    } catch {}
+                    # ---- FAILSAFE: queue every surviving locked file/dir for boot-time evaporation ----
+                    try {
+                        $null = Register-UWMResidueBootEvaporation -Dir $rPath
                     } catch {}
                 }
             } catch {
@@ -8145,23 +8797,25 @@ function Invoke-UWMShredTarget {
                         $matchedDirs = Get-ChildItem -Path $scanRoot -Directory -ErrorAction SilentlyContinue |
                                        Where-Object { $_.Name -match [regex]::Escape($searchName) }
                         foreach ($dir in $matchedDirs) {
-                            if (Test-UWMExcludedPath $dir.FullName) { continue }
+                            $safeD = Get-UWMSafeShredRoot -Path $dir.FullName
+                            if ($null -eq $safeD) { continue }
                             try {
-                                Write-Host "    -> Fallback wipe: $($dir.FullName)" -ForegroundColor Red
-                                $escD = "`"$($dir.FullName)`""
+                                Write-Host "    -> Fallback wipe: $safeD" -ForegroundColor Red
+                                $escD = "`"$safeD`""
                                 Start-Process takeown.exe -ArgumentList "/f $escD /r /d y" -NoNewWindow -Wait -ErrorAction SilentlyContinue
                                 Start-Process icacls.exe  -ArgumentList "$escD /grant administrators:F /t /c /q" -NoNewWindow -Wait -ErrorAction SilentlyContinue
-                                Remove-Item $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue
-                                if (Test-Path $dir.FullName) {
-                                    Start-Process cmd -ArgumentList "/c rmdir /s /q `"$($dir.FullName)`"" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
+                                Remove-Item $safeD -Recurse -Force -ErrorAction SilentlyContinue
+                                if (Test-Path $safeD) {
+                                    Start-Process cmd -ArgumentList "/c rmdir /s /q `"$safeD`"" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
                                 }
-                                if (-not (Test-Path $dir.FullName)) {
-                                    Write-Host "    -> [OK] Fallback vaporized: $($dir.FullName)" -ForegroundColor Green
+                                if (-not (Test-Path $safeD)) {
+                                    Write-Host "    -> [OK] Fallback vaporized: $safeD" -ForegroundColor Green
                                 } else {
-                                    Write-Host "    -> [WARN] Fallback partial removal: $($dir.FullName)" -ForegroundColor DarkYellow
+                                    Write-Host "    -> [WARN] Fallback partial removal: $safeD" -ForegroundColor DarkYellow
+                                    try { $null = Register-UWMResidueBootEvaporation -Dir $safeD } catch {}
                                 }
                             } catch {
-                                Write-Host "    -> [WARN] Fallback target locked: $($dir.FullName) — $($_.Exception.Message)" -ForegroundColor DarkYellow
+                                Write-Host "    -> [WARN] Fallback target locked: $safeD — $($_.Exception.Message)" -ForegroundColor DarkYellow
                             }
                         }
                     } catch {}
@@ -8176,15 +8830,17 @@ function Invoke-UWMShredTarget {
                                  Where-Object { $_.Name -match [regex]::Escape($keyword) }
                     foreach ($dir in $extraDirs) {
                         if (-not (Test-Path $dir.FullName)) { continue }
-                        if (Test-UWMExcludedPath $dir.FullName) { continue }
+                        $safeX = Get-UWMSafeShredRoot -Path $dir.FullName
+                        if ($null -eq $safeX) { continue }
                         try {
-                            $escX = "`"$($dir.FullName)`""
+                            $escX = "`"$safeX`""
                             Start-Process takeown.exe -ArgumentList "/f $escX /r /d y" -NoNewWindow -Wait -ErrorAction SilentlyContinue
                             Start-Process icacls.exe  -ArgumentList "$escX /grant administrators:F /t /c /q" -NoNewWindow -Wait -ErrorAction SilentlyContinue
-                            Remove-Item $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue
-                            if (Test-Path $dir.FullName) {
-                                Start-Process cmd -ArgumentList "/c rmdir /s /q `"$($dir.FullName)`"" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
+                            Remove-Item $safeX -Recurse -Force -ErrorAction SilentlyContinue
+                            if (Test-Path $safeX) {
+                                Start-Process cmd -ArgumentList "/c rmdir /s /q `"$safeX`"" -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue
                             }
+                            if (Test-Path $safeX) { try { $null = Register-UWMResidueBootEvaporation -Dir $safeX } catch {} }
                         } catch {}
                     }
                 } catch {}
